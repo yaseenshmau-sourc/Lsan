@@ -53,6 +53,8 @@ button.alt{background:transparent;color:var(--teal);border:2px solid var(--teal)
 .big{font-size:64px;text-align:center;margin:30px 0 6px}
 .toast{background:var(--coral);color:#fff;padding:10px 14px;border-radius:12px;margin-bottom:12px}
 .ltr{direction:ltr;text-align:right}
+.lvl{background:var(--card);border:2px dashed var(--teal);color:var(--teal);border-radius:12px;padding:8px 12px;margin:20px 0 8px;font-weight:800;text-align:center}
+.node small b{font-weight:800}
 </style>
 </head>
 <body>
@@ -65,7 +67,7 @@ const app=document.getElementById('app');
 const TTS={en:'en-US',tr:'tr-TR',fr:'fr-FR',es:'es-ES',zh:'zh-CN',ko:'ko-KR',hi:'hi-IN'};
 const S={user:null,p:null,langs:[],lang:null,ex:[],i:0,right:0,sel:null,picked:[],opts:[],fb:null,lesson:null,retried:{}};
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const norm=s=>String(s).toLowerCase().replace(/[.,!?¿¡'"’؟،]/g,'').replace(/\s+/g,' ').trim();
+const norm=s=>String(s).toLowerCase().replace(/ı/g,'i').replace(/œ/g,'oe').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[.,!?¿¡'"’؟،？，]/g,'').replace(/\s+/g,' ').trim();
 const today=()=>new Date().toISOString().slice(0,10);
 const toast=m=>`<div class="toast">${esc(m)}</div>`;
 
@@ -113,30 +115,77 @@ function langView(){
   document.getElementById('out').onclick=async()=>{await sb.auth.signOut();localStorage.removeItem('lisan_lang');authView()};
 }
 
+const NAMES={es:'Spanish',fr:'French',tr:'Turkish'};
+const LATIN=['en','es','fr','tr'];
+const LVL=['سهل','متوسط','صعب'];
+const CACHE={};let UID=0;
+const shuf=a=>a.slice().sort(()=>Math.random()-.5);
+
 async function mapView(){
   app.innerHTML=topbar(true)+'<p class="sub">جاري التحميل…</p>';
   const{data:units}=await sb.from('units').select('*, lessons(*)').eq('language_id',S.lang.id).order('sort_order');
-  const{data:prog}=await sb.from('user_progress').select('lesson_id').eq('user_id',S.user.id);
+  const{data:prog}=await sb.from('user_progress').select('lesson_id').eq('user_id',S.user.id).limit(2000);
   const done=new Set((prog||[]).map(r=>r.lesson_id));
   let html=topbar(true),prev=true,n=0;
-  if(!units||!units.length)html+='<h2>لا توجد دروس بعد</h2><p class="sub">شغّل ملف seed.sql في Supabase لإضافة دروس تجريبية.</p>';
-  (units||[]).forEach(u=>{
-    html+=`<div class="unit">${esc(S.lang.instruction_lang==='ar'?(u.title_ar||u.title_en):u.title_en)}<small>${esc(u.title_ar||'')}</small></div>`;
+  if(!units||!units.length)html+='<h2>لا توجد دروس بعد</h2><p class="sub">شغّل ملفات SQL الخاصة بالمحتوى في Supabase.</p>';
+  (units||[]).forEach((u,ui)=>{
+    const ar=S.lang.instruction_lang==='ar';
+    html+=`<div class="unit">القسم ${ui+1} · ${esc(ar?u.title_ar:u.title_en)}<small>${esc(ar?u.title_en:u.title_ar)}</small></div>`;
     (u.lessons||[]).sort((a,b)=>a.sort_order-b.sort_order).forEach(ls=>{
+      const o=ls.sort_order,lv=Math.min(2,Math.floor((o-1)/10));
+      if(o%10===1)html+=`<div class="lvl">المستوى ${lv+1} · ${LVL[lv]}</div>`;
       const d=done.has(ls.id),open=prev||d,cls=d?'done':open?'':'lock';
-      html+=`<div class="row c${(n%3)+1}"><div class="node ${cls}" data-id="${open?ls.id:''}" data-xp="${ls.xp_reward}">${d?'✓':open?'▶':'🔒'}<small>${esc(ls.title)}</small></div></div>`;
+      html+=`<div class="row c${(n%3)+1}"><div class="node ${cls}" data-id="${open?ls.id:''}" data-xp="${ls.xp_reward}" data-d="${d?1:0}" data-o="${o}" data-u="${u.id}">${d?'✓':open?'▶':'🔒'}<small>${o%10===0?o+' ❤️':o}</small></div></div>`;
       prev=d;n++;
     });
   });
   app.innerHTML=html;
-  app.querySelectorAll('.node').forEach(el=>el.onclick=()=>el.dataset.id&&startLesson(+el.dataset.id,+el.dataset.xp));
+  app.querySelectorAll('.node').forEach(el=>el.onclick=()=>el.dataset.id&&startLesson(+el.dataset.id,+el.dataset.xp,el.dataset.d==='1',+el.dataset.o,+el.dataset.u));
 }
 
-async function startLesson(id,xp){
+function buildStage(order,V,SN){
+  const g=(order-1)%10,lv=Math.min(2,Math.floor((order-1)/10)),lg=S.lang.id,ar=lg==='en',latin=LATIN.includes(lg);
+  const ws=V.slice(3*g,3*g+3);
+  const mk=(type,prompt,answer,options,rom,aud)=>({id:++UID,type,prompt,answer,options,romanization:rom||null,audio_text:aud||null});
+  const dis=(w,key,n)=>{
+    let pool=V.filter(x=>x.idx!==w.idx);
+    if(lv===2){const pk=Math.floor((w.idx-1)/6),near=pool.filter(x=>Math.floor((x.idx-1)/6)===pk);if(near.length>=n)pool=near}
+    const seen=new Set([w[key]]),out=[];
+    for(const x of shuf(pool)){if(!seen.has(x[key])){seen.add(x[key]);out.push(x[key]);if(out.length===n)break}}
+    return out;
+  };
+  const k=lv===0?2:3;
+  let out=[];
+  ws.forEach(w=>{
+    const t2m=()=>mk('choice',ar?`ماذا تعني "${w.word}"؟`:`What does "${w.word}" mean?`,w.meaning,shuf([w.meaning,...dis(w,'meaning',k)]),w.romanization,w.word);
+    const m2t=()=>mk('choice',ar?`كيف تقول "${w.meaning}"؟`:`How do you say "${w.meaning}"?`,w.word,shuf([w.word,...dis(w,'word',k)]));
+    const lis=()=>mk('listen',ar?'اسمع واختر المعنى':'Listen and choose the meaning',w.meaning,shuf([w.meaning,...dis(w,'meaning',3)]),null,w.word);
+    const typ=()=>latin?mk('write',ar?`اكتب بالإنجليزي: "${w.meaning}"`:`Type in ${NAMES[lg]}: "${w.meaning}"`,w.word,null,null,w.word):lis();
+    if(lv===0)out.push(t2m(),m2t());
+    else if(lv===1)out.push(t2m(),m2t(),typ());
+    else{out.push(m2t(),typ());if(latin)out.push(lis())}
+  });
+  if(lv>0)out=shuf(out);
+  const s=SN[g];
+  if(s&&lv>=1){
+    const wr=shuf(SN.filter(x=>x.idx!==s.idx).map(x=>x.meaning)).slice(0,3);
+    out.push(mk('choice',ar?`ماذا تعني "${s.text}"؟`:`What does "${s.text}" mean?`,s.meaning,shuf([s.meaning,...wr]),s.romanization,s.text));
+    if(lv===2)out.push(mk('order',ar?`رتّب: "${s.meaning}"`:`Order: "${s.meaning}"`,s.text,shuf(s.text.split(' ')),s.romanization,null));
+  }
+  return out;
+}
+
+async function startLesson(id,xp,done,order,unit){
   if(S.p.hearts<=0){app.innerHTML=topbar(true)+toast('خلصت قلوبك اليوم. ارجع بكرة لتكمل.')+'<button onclick="mapView()">رجوع</button>';return}
-  const{data}=await sb.from('exercises').select('*').eq('lesson_id',id).order('sort_order');
-  if(!data||!data.length){alert('هذا الدرس فاضي بعد');return}
-  Object.assign(S,{ex:data.slice(),i:0,right:0,lesson:{id,xp},retried:{}});
+  if(!CACHE[unit]){
+    const[v,s]=await Promise.all([sb.from('vocab').select('*').eq('unit_id',unit).order('idx'),sb.from('sentences').select('*').eq('unit_id',unit).order('idx')]);
+    CACHE[unit]={v:v.data||[],s:s.data||[]};
+  }
+  const c=CACHE[unit];let ex=[];
+  if(c.v.length>=3*((order-1)%10+1))ex=buildStage(order,c.v,c.s);
+  else{const{data}=await sb.from('exercises').select('*').eq('lesson_id',id).order('sort_order');ex=data||[]}
+  if(!ex.length){alert('هذا الدرس فاضي بعد');return}
+  Object.assign(S,{ex,i:0,right:0,lesson:{id,xp,done,order},retried:{}});
   exView();
 }
 
@@ -193,20 +242,22 @@ async function check(e){
 }
 
 async function endView(win){
+  let bonus=false;
   if(win){
     const last=S.p.last_active,t=today(),y=new Date(Date.now()-864e5).toISOString().slice(0,10);
     const streak=last===t?S.p.streak:last===y?S.p.streak+1:1;
     S.p.xp+=S.lesson.xp;S.p.streak=streak;S.p.last_active=t;
+    if(!S.lesson.done&&S.lesson.order%10===0){S.p.hearts=Math.min(10,S.p.hearts+1);bonus=true}
     await sb.from('user_progress').upsert({user_id:S.user.id,lesson_id:S.lesson.id,score:S.right});
-    await sb.from('profiles').update({xp:S.p.xp,streak,last_active:t}).eq('id',S.user.id);
+    await sb.from('profiles').update({xp:S.p.xp,streak,last_active:t,hearts:S.p.hearts}).eq('id',S.user.id);
   }
-  app.innerHTML=`<div class="big">${win?'🎉':'💔'}</div><h2 style="text-align:center">${win?'أنهيت الدرس!':'خلصت القلوب'}</h2>
-  <p class="sub" style="text-align:center">${win?`ربحت ${S.lesson.xp} نقطة خبرة · سلسلتك ${S.p.streak} يوم 🔥`:'ارجع بكرة وكمّل من وين وقفت.'}</p><button onclick="mapView()">متابعة</button>`;
+  app.innerHTML=`<div class="big">${win?'🎉':'💔'}</div><h2 style="text-align:center">${win?'أنهيت المرحلة!':'خلصت القلوب'}</h2>
+  <p class="sub" style="text-align:center">${win?`ربحت ${S.lesson.xp} نقطة خبرة · سلسلتك ${S.p.streak} يوم 🔥`:'ارجع بكرة وكمّل من وين وقفت.'}</p>${bonus?'<p class="sub" style="text-align:center;font-weight:800;color:var(--coral)">❤️ مبروك! ربحت قلب جديد</p>':''}<button onclick="mapView()">متابعة</button>`;
 }
 
 sb.auth.onAuthStateChange(ev=>{if(ev==='SIGNED_OUT')authView()});
 if('serviceWorker' in navigator)addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}));
-boot();
 </script>
+<script src="/ui.js"></script>
 </body>
 </html>
